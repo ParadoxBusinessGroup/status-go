@@ -163,6 +163,8 @@ type PublicAPI struct {
 	service   *Service
 	publicAPI *whisper.PublicWhisperAPI
 	log       log.Logger
+
+	historyStore *HistoryUpdateTracker
 }
 
 // NewPublicAPI returns instance of the public API.
@@ -491,6 +493,103 @@ func (api *PublicAPI) SendDirectMessage(ctx context.Context, msg chat.SendDirect
 
 	// And dispatch
 	return api.Post(ctx, whisperMessage)
+}
+
+// InitiateHistoryRequest type for initiating history requests from a peer.
+type InitiateHistoryRequest struct {
+	Peer     string
+	SymKeyID string
+	Requests []TopicRequest
+	Force    bool
+	Timeout  time.Duration
+}
+
+func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload []byte, force bool, timeout time.Duration) (commo.Hash, error) {
+	shh := api.service.w
+	now := api.service.w.GetCurrentTime()
+
+	mailServerNode, err := api.getPeer(peer)
+	if err != nil {
+		return nil, fmt.Errorf("%v: %v", ErrInvalidMailServerPeer, err)
+	}
+
+	var (
+		symKey    []byte
+		publicKey *ecdsa.PublicKey
+	)
+
+	if symkeyID != "" {
+		symKey, err = shh.GetSymKey(symkeyID)
+		if err != nil {
+			return nil, fmt.Errorf("%v: %v", ErrInvalidSymKeyID, err)
+		}
+	} else {
+		publicKey = mailServerNode.Pubkey()
+	}
+
+	envelope, err := makeEnvelop(
+		payload,
+		symKey,
+		publicKey,
+		api.service.nodeID,
+		shh.MinPow(),
+		now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	hash := envelope.Hash()
+
+	if force {
+		// FIXME
+		err = api.service.requestsRegistry.Register(hash, r.Topics)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := shh.RequestHistoricMessagesWithTimeout(mailServerNode.ID().Bytes(), envelope, timeout); err != nil {
+		if force {
+			api.service.requestsRegistry.Unregister(hash)
+		}
+		return nil, err
+	}
+
+	return hash, nil
+
+}
+
+// InitiateHistoryRequests is a stateful API for initiating history request for each topic.
+// Caller of this method needs to define only two parameters per each TopicRequest:
+// - Topic
+// - Duration before Now
+// After that status-go will guarantee that request for this topic and date will be performed.
+func (api *PublicAPI) InitiateHistoryRequests(request InitiateHistoryRequest) error {
+	requests, err := api.historyStore.CreateRequests(request.Requests)
+	if err != nil {
+		return err
+	}
+	for i := range requests {
+		req := requests[i]
+		options := CreateTopicOptionsFromRequest(req)
+		bloom := options.ToBloomFilterOption()
+		payload, err := bloom.ToMessagesRequestPayload()
+		if err != nil {
+			return err
+		}
+		hash, err := api.requestMessagesUsingPayload(request.Peer, request.SymKeyID, payload, request.Force, request.Timeout)
+		if err != nil {
+			return err
+		}
+		req.ID = hash
+		// after save we will ensure that this request is finished. application will have to ensure that no more
+		// topics can be added to it before that.
+		err = req.Save()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DEPRECATED: use SendDirectMessage with DH flag

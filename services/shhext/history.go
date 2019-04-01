@@ -1,0 +1,185 @@
+package shhext
+
+import (
+	"time"
+
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/status-im/status-go/db"
+	"github.com/status-im/status-go/mailserver"
+	whisper "github.com/status-im/whisper/whisperv6"
+)
+
+const (
+	// WhisperTimeAllowance
+	WhisperTimeAllowance = 20 * time.Second
+)
+
+// HistoryUpdateTracker responsible for tracking progress for all history requests.
+// It listens for 2 events:
+//    - when envelope from mail server is received we will update appropriate topic on disk
+//    - when confirmation for request completion is received - we will set last envelope timestamp as the last timestamp
+//      for all TopicLists in current request.
+type HistoryUpdateTracker struct {
+	store db.HistoryStore
+}
+
+// TopicRequest defines what user has to provide.
+type TopicRequest struct {
+	Topic    whisper.TopicType
+	Duration time.Duration
+}
+
+// CreateRequests receives list of topic with desired timestamps and initiates both pending requests and requests
+// that cover new topics.
+func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest) ([]db.HistoryRequest, error) {
+	topics := map[whisper.TopicType]db.TopicHistory{}
+	for i := range topicRequests {
+		// TODO doesn't exist should be ignored, other errors passed higher
+		topic, _ := tracker.store.GetHistory(topicRequests[i].Topic, topicRequests[i].Duration)
+		topics[topicRequests[i].Topic] = topic
+	}
+	// TODO check if app wait's for any unfinished requests
+	requests, err := tracker.store.GetAllRequests()
+	if err != nil {
+		return nil, err
+	}
+	// next remove topics that are already covered by not-finished requests.
+	for i := range requests {
+		for _, t := range topics {
+			if requests[i].Includes(t) {
+				delete(topics, t.Topic)
+			}
+		}
+	}
+	requests = append(requests, createRequestsFromTopicHistories(mapToList(topics))...)
+	return RenewRequests(requests), nil
+}
+
+// RenewRequests re-sets current and first timestamps.
+// Changes should not be persisted on disk yet.
+func RenewRequests(requests []db.HistoryRequest) []db.HistoryRequest {
+	zero := time.Time{}
+	// TODO inject our ntp-synced time
+	now := time.Now()
+	for i := range requests {
+		req := requests[i]
+		histories := req.Histories()
+		for j := range histories {
+			history := histories[j]
+			//
+			if history.Current == zero {
+				history.Current = now.Add(-(history.Duration))
+			}
+			if history.First == zero {
+				history.First = history.Current
+			}
+		}
+	}
+	return requests
+}
+
+// CreateTopicOptionsFromRequest transforms histories attached to a single request to a simpler format - TopicOptions.
+func CreateTopicOptionsFromRequest(req db.HistoryRequest) TopicOptions {
+	histories := req.Histories()
+	rst := make(TopicOptions, len(histories))
+	now := time.Now()
+	for i := range histories {
+		history := histories[i]
+		rst[i] = TopicOption{
+			Topic: history.Topic,
+			Range: Range{
+				Start: uint64(history.Current.Add(-(WhisperTimeAllowance)).UnixNano()),
+				End:   uint64(now.UnixNano()),
+			},
+		}
+	}
+	return rst
+}
+
+func mapToList(topics map[whisper.TopicType]db.TopicHistory) []db.TopicHistory {
+	rst := make([]db.TopicHistory, 0, len(topics))
+	for key := range topics {
+		rst = append(rst, topics[key])
+	}
+	return rst
+}
+
+func createRequestsFromTopicHistories(histories []db.TopicHistory) []db.HistoryRequest {
+	requests := []db.HistoryRequest{}
+	for _, h := range histories {
+		if len(requests) == 0 {
+			requests = append(requests, db.HistoryRequest{})
+		}
+		for i := range requests {
+			req := requests[i]
+			histories := req.Histories()
+			if len(histories) == 0 || histories[0].SameRange(h) {
+				req.AddHistory(h)
+			}
+		}
+	}
+	return nil
+}
+
+// Range of the request.
+type Range struct {
+	Start uint64
+	End   uint64
+}
+
+// TopicOption request for a single topic.
+type TopicOption struct {
+	Topic whisper.TopicType
+	Range Range
+}
+
+// TopicOptions is a list of topic-based requsts.
+type TopicOptions []TopicOption
+
+// ToBloomFilterOption creates bloom filter request from a list of topics.
+func (options TopicOptions) ToBloomFilterOption() BloomFilterOption {
+	topics := make([]whisper.TopicType, len(options))
+	var start, end uint64
+	for i := range options {
+		opt := options[i]
+		topics[i] = opt.Topic
+		if opt.Range.Start > start {
+			start = opt.Range.Start
+		}
+		// just select the first one, and log errors. if error occurs this is definitely a bug.
+		if i == 0 {
+			end = opt.Range.End
+		} else if end != opt.Range.End {
+			log.Error("End timestamp must be the same across all options in a single request", "topic", opt.Topic, "expected", end, "got", opt.Range.End)
+		}
+	}
+
+	return BloomFilterOption{
+		Range:  Range{Start: start, End: end},
+		Filter: topicsToBloom(topics...),
+	}
+}
+
+// BloomFilterOption is a request based on bloom filter.
+type BloomFilterOption struct {
+	Range  Range
+	Filter []byte
+}
+
+// ToMessagesRequestPayload creates mailserver.MessagesRequestPayload and encodes it to bytes using rlp.
+func (filter BloomFilterOption) ToMessagesRequestPayload() ([]byte, error) {
+	// TODO fix this conversion.
+	// we start from time.Duration which is int64, then convert to uint64 for rlp-serilizability
+	// why uint32 here? max uint32 is smaller than max int64
+	payload := mailserver.MessagesRequestPayload{
+		Lower: uint32(filter.Range.Start),
+		Upper: uint32(filter.Range.End),
+		Bloom: filter.Filter,
+		// Client must tell the MailServer if it supports batch responses.
+		// This can be removed in the future.
+		Batch: true,
+	}
+
+	return rlp.EncodeToBytes(payload)
+}
