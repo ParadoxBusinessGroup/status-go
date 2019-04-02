@@ -1,8 +1,11 @@
 package shhext
 
 import (
+	"errors"
+	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/status-im/status-go/db"
@@ -21,7 +24,61 @@ const (
 //    - when confirmation for request completion is received - we will set last envelope timestamp as the last timestamp
 //      for all TopicLists in current request.
 type HistoryUpdateTracker struct {
+	mu    sync.Mutex
 	store db.HistoryStore
+}
+
+// EventRequestFinished is a place holder for actual event.
+// FIXME replace it.
+type EventRequestFinished struct {
+	ID            common.Hash
+	LastTimestamp time.Time
+}
+
+// once request finished we need to update timestamp for all topics, so that in next request they all will start
+// from same timestamp.
+func (tracker *HistoryUpdateTracker) handleEventRequestFinished(event EventRequestFinished) error {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	req, err := tracker.store.GetRequest(event.ID)
+	if err != nil {
+		return err
+	}
+	histories := req.Histories()
+	for i := range histories {
+		history := histories[i]
+		// TODO add batch update
+		history.Current = event.LastTimestamp
+	}
+	err = req.Save()
+	if err != nil {
+		return err
+	}
+	return req.Delete()
+}
+
+type EventTopicHistoryUpdate struct {
+	Topic     whisper.TopicType
+	Timestamp time.Time
+}
+
+// get all topics that start from given Topic update Timestamp if it is higher than Current
+func (tracker *HistoryUpdateTracker) handleEventTopicHistoryUpdate(event EventTopicHistoryUpdate) error {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	histories, err := tracker.store.GetHistoriesByTopic(event.Topic)
+	if err != nil {
+		return err
+	}
+	// TODO support multiple ranges per topic
+	if len(histories) != 1 {
+		return errors.New("expect only single history per topic")
+	}
+	th := histories[0]
+	if event.Timestamp.After(th.Current) {
+		th.Current = event.Timestamp
+	}
+	return th.Save()
 }
 
 // TopicRequest defines what user has to provide.
@@ -33,6 +90,8 @@ type TopicRequest struct {
 // CreateRequests receives list of topic with desired timestamps and initiates both pending requests and requests
 // that cover new topics.
 func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest) ([]db.HistoryRequest, error) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
 	topics := map[whisper.TopicType]db.TopicHistory{}
 	for i := range topicRequests {
 		// TODO doesn't exist should be ignored, other errors passed higher
@@ -159,6 +218,15 @@ func (options TopicOptions) ToBloomFilterOption() BloomFilterOption {
 		Range:  Range{Start: start, End: end},
 		Filter: topicsToBloom(topics...),
 	}
+}
+
+// Topics returns list of whisper TopicType attached to each TopicOption.
+func (options TopicOptions) Topics() []whisper.TopicType {
+	rst := make([]whisper.TopicType, len(options))
+	for i := range options {
+		rst[i] = options[i].Topic
+	}
+	return rst
 }
 
 // BloomFilterOption is a request based on bloom filter.

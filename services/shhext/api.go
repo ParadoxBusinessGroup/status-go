@@ -504,13 +504,13 @@ type InitiateHistoryRequest struct {
 	Timeout  time.Duration
 }
 
-func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload []byte, force bool, timeout time.Duration) (commo.Hash, error) {
+func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload []byte, force bool, timeout time.Duration, topics []whisper.TopicType) (hash common.Hash, err error) {
 	shh := api.service.w
 	now := api.service.w.GetCurrentTime()
 
 	mailServerNode, err := api.getPeer(peer)
 	if err != nil {
-		return nil, fmt.Errorf("%v: %v", ErrInvalidMailServerPeer, err)
+		return hash, fmt.Errorf("%v: %v", ErrInvalidMailServerPeer, err)
 	}
 
 	var (
@@ -521,7 +521,7 @@ func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload
 	if symkeyID != "" {
 		symKey, err = shh.GetSymKey(symkeyID)
 		if err != nil {
-			return nil, fmt.Errorf("%v: %v", ErrInvalidSymKeyID, err)
+			return hash, fmt.Errorf("%v: %v", ErrInvalidSymKeyID, err)
 		}
 	} else {
 		publicKey = mailServerNode.Pubkey()
@@ -536,15 +536,15 @@ func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload
 		now,
 	)
 	if err != nil {
-		return nil, err
+		return hash, err
 	}
-	hash := envelope.Hash()
+	hash = envelope.Hash()
 
 	if force {
 		// FIXME
-		err = api.service.requestsRegistry.Register(hash, r.Topics)
+		err = api.service.requestsRegistry.Register(hash, topics)
 		if err != nil {
-			return nil, err
+			return hash, err
 		}
 	}
 
@@ -552,7 +552,7 @@ func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload
 		if force {
 			api.service.requestsRegistry.Unregister(hash)
 		}
-		return nil, err
+		return hash, err
 	}
 
 	return hash, nil
@@ -577,7 +577,7 @@ func (api *PublicAPI) InitiateHistoryRequests(request InitiateHistoryRequest) er
 		if err != nil {
 			return err
 		}
-		hash, err := api.requestMessagesUsingPayload(request.Peer, request.SymKeyID, payload, request.Force, request.Timeout)
+		hash, err := api.requestMessagesUsingPayload(request.Peer, request.SymKeyID, payload, request.Force, request.Timeout, options.Topics())
 		if err != nil {
 			return err
 		}

@@ -45,12 +45,33 @@ func (h HistoryStore) GetAllRequests() ([]HistoryRequest, error) {
 	rst := []HistoryRequest{}
 	iter := h.requestDB.NewIterator(h.requestDB.Range(nil, nil))
 	for iter.Next() {
-		req := HistoryRequest{db: h.requestDB}
+		req := HistoryRequest{
+			db:      h.requestDB,
+			topicDB: h.topicDB,
+		}
 		err := req.RawUnmarshall(iter.Value())
 		if err != nil {
 			return nil, err
 		}
 		rst = append(rst, req)
+	}
+	return rst, nil
+}
+
+// GetHistoriesByTopic returns all histories with a given topic.
+// This is needed when we will have multiple range per single topic.
+// TODO explain
+func (h HistoryStore) GetHistoriesByTopic(topic whisper.TopicType) ([]TopicHistory, error) {
+	rst := []TopicHistory{}
+	iter := h.topicDB.NewIterator(h.topicDB.Range(topic[:], nil))
+	for iter.Next() {
+		key := TopicHistoryKey{}
+		copy(key[:], iter.Key())
+		th, err := LoadTopicHistoryFromKey(h.topicDB, key)
+		if err != nil {
+			return nil, err
+		}
+		rst = append(rst, th)
 	}
 	return rst, nil
 }

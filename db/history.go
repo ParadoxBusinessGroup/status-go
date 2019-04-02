@@ -151,6 +151,10 @@ func (req HistoryRequest) Save() error {
 	return req.db.Put(req.ID.Bytes(), val)
 }
 
+func (req HistoryRequest) Delete() error {
+	return req.db.Delete(req.ID.Bytes())
+}
+
 // Load reads request and topic histories content from disk and unmarshalls them.
 func (req *HistoryRequest) Load() error {
 	val, err := req.db.Get(req.ID.Bytes())
