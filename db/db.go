@@ -28,6 +28,18 @@ const (
 	HistoryRequestBucket
 )
 
+// NewMemoryDB returns leveldb with memory backend prefixed with a bucket.
+func NewMemoryDB(bucket storagePrefix) (pdb PrefixedLevelDB, err error) {
+	db, err := leveldb.Open(storage.NewMemStorage(), nil)
+	if err != nil {
+		return pdb, err
+	}
+	return PrefixedLevelDB{
+		db:     db,
+		prefix: bucket,
+	}, nil
+}
+
 // Key creates a DB key for a specified service with specified data
 func Key(prefix storagePrefix, data ...[]byte) []byte {
 	keyLength := 1
@@ -72,38 +84,41 @@ type PrefixedLevelDB struct {
 	prefix storagePrefix
 }
 
-func (db *PrefixedLevelDB) prefixedKey(key []byte) []byte {
+func (db PrefixedLevelDB) prefixedKey(key []byte) []byte {
 	endkey := make([]byte, len(key)+1)
 	endkey[0] = byte(db.prefix)
 	copy(endkey[1:], key)
 	return endkey
 }
 
-func (db *PrefixedLevelDB) Put(key, value []byte) error {
+func (db PrefixedLevelDB) Put(key, value []byte) error {
 	return db.db.Put(db.prefixedKey(key), value, nil)
 }
 
-func (db *PrefixedLevelDB) Get(key []byte) ([]byte, error) {
+func (db PrefixedLevelDB) Get(key []byte) ([]byte, error) {
 	return db.db.Get(db.prefixedKey(key), nil)
 }
 
 // Range returns leveldb util.Range prefixed with a single byte.
 // If prefix is nil range will iterate over all records in a given bucket.
-func (db *PrefixedLevelDB) Range(prefix, limit []byte) *util.Range {
+func (db PrefixedLevelDB) Range(prefix, limit []byte) *util.Range {
 	if limit == nil {
 		return util.BytesPrefix(db.prefixedKey(prefix))
 	}
 	return &util.Range{Start: db.prefixedKey(prefix), Limit: db.prefixedKey(limit)}
 }
 
-func (db *PrefixedLevelDB) Delete(key []byte) error {
+// Delete removes key from database.
+func (db PrefixedLevelDB) Delete(key []byte) error {
 	return db.db.Delete(db.prefixedKey(key), nil)
 }
 
-func (db *PrefixedLevelDB) NewIterator(slice *util.Range) PrefixedIterator {
+// NewIterator returns iterator for a given slice.
+func (db PrefixedLevelDB) NewIterator(slice *util.Range) PrefixedIterator {
 	return PrefixedIterator{db.db.NewIterator(slice, nil)}
 }
 
+// PrefixedIterator
 type PrefixedIterator struct {
 	iter iterator.Iterator
 }

@@ -28,16 +28,19 @@ type Interface interface {
 // TopicHistoryKey defines bytes that are used as unique key for TopicHistory.
 // first 4 bytes are whisper.TopicType bytes
 // next 8 bytes are time.Duration encoded in big endian notation.
-type TopicHistoryKey [8]byte
+type TopicHistoryKey [12]byte
 
-func (key TopicHistoryKey) ToEmptyTopicHistory() (th TopicHistory, err error) {
+// LoadTopicHistoryFromKey unmarshalls key into topic and duration and loads value of topic history
+// from given database.
+func LoadTopicHistoryFromKey(db Interface, key TopicHistoryKey) (th TopicHistory, err error) {
 	if (key == TopicHistoryKey{}) {
 		return th, ErrEmptyKey
 	}
 	topic := whisper.TopicType{}
 	copy(topic[:], key[:4])
 	duration := binary.BigEndian.Uint64(key[4:])
-	return TopicHistory{Topic: topic, Duration: time.Duration(duration)}, nil
+	th = TopicHistory{db: db, Topic: topic, Duration: time.Duration(duration)}
+	return th, th.Load()
 }
 
 // TopicHistory stores necessary information.
@@ -63,10 +66,12 @@ func (t TopicHistory) Key() TopicHistoryKey {
 	return key
 }
 
+// Value marshalls TopicHistory into bytes.
 func (t TopicHistory) Value() ([]byte, error) {
 	return json.Marshal(t)
 }
 
+// Load TopicHistory from db using key and unmarshalls it.
 func (t *TopicHistory) Load() error {
 	key := t.Key()
 	if (key == TopicHistoryKey{}) {
@@ -79,6 +84,7 @@ func (t *TopicHistory) Load() error {
 	return json.Unmarshal(value, t)
 }
 
+// Save persists TopicHistory on disk.
 func (t TopicHistory) Save() error {
 	key := t.Key()
 	val, err := t.Value()
@@ -102,7 +108,8 @@ func (t TopicHistory) SameRange(other TopicHistory) bool {
 // HistoryRequest is kept in the database while request is in the progress.
 // Stores necessary information to identify topics with associated ranges included in the request.
 type HistoryRequest struct {
-	db Interface
+	db      Interface
+	topicDB Interface
 
 	histories []TopicHistory
 
@@ -112,20 +119,25 @@ type HistoryRequest struct {
 	TopicHistoryKeys []TopicHistoryKey
 }
 
+// AddHistory adds instance to internal list of instance and add instance key to the list
+// which will be persisted on disk.
 func (req *HistoryRequest) AddHistory(history TopicHistory) {
 	req.histories = append(req.histories, history)
 	req.TopicHistoryKeys = append(req.TopicHistoryKeys, history.Key())
 }
 
+// Histories returns internal lsit of topic histories.
 func (req *HistoryRequest) Histories() []TopicHistory {
 	// TODO Lazy load from database on first access
 	return req.histories
 }
 
+// Value returns content of HistoryRequest as bytes.
 func (req HistoryRequest) Value() ([]byte, error) {
 	return json.Marshal(req)
 }
 
+// Save persists all attached histories and request itself on the disk.
 func (req HistoryRequest) Save() error {
 	for _, h := range req.histories {
 		if err := h.Save(); err != nil {
@@ -139,6 +151,7 @@ func (req HistoryRequest) Save() error {
 	return req.db.Put(req.ID.Bytes(), val)
 }
 
+// Load reads request and topic histories content from disk and unmarshalls them.
 func (req *HistoryRequest) Load() error {
 	val, err := req.db.Get(req.ID.Bytes())
 	if err != nil {
@@ -149,11 +162,7 @@ func (req *HistoryRequest) Load() error {
 		return err
 	}
 	for _, hk := range req.TopicHistoryKeys {
-		th, err := hk.ToEmptyTopicHistory()
-		if err != nil {
-			return err
-		}
-		err = th.Load()
+		th, err := LoadTopicHistoryFromKey(req.topicDB, hk)
 		if err != nil {
 			return err
 		}
@@ -162,10 +171,13 @@ func (req *HistoryRequest) Load() error {
 	return nil
 }
 
+// RawUnmarshall unmarshall given bytes into the structure.
+// TODO add use case here
 func (req *HistoryRequest) RawUnmarshall(val []byte) error {
 	return json.Unmarshal(val, req)
 }
 
+// Includes checks if TopicHistory is included into the request.
 func (req *HistoryRequest) Includes(history TopicHistory) bool {
 	key := history.Key()
 	for i := range req.TopicHistoryKeys {
