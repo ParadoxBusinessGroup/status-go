@@ -564,10 +564,11 @@ func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload
 // - Topic
 // - Duration before Now
 // After that status-go will guarantee that request for this topic and date will be performed.
-func (api *PublicAPI) InitiateHistoryRequests(request InitiateHistoryRequest) error {
+func (api *PublicAPI) InitiateHistoryRequests(request InitiateHistoryRequest) ([]hexutil.Bytes, error) {
+	rst := []hexutil.Bytes{}
 	requests, err := api.historyStore.CreateRequests(request.Requests)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for i := range requests {
 		req := requests[i]
@@ -575,21 +576,24 @@ func (api *PublicAPI) InitiateHistoryRequests(request InitiateHistoryRequest) er
 		bloom := options.ToBloomFilterOption()
 		payload, err := bloom.ToMessagesRequestPayload()
 		if err != nil {
-			return err
+			return rst, err
 		}
 		hash, err := api.requestMessagesUsingPayload(request.Peer, request.SymKeyID, payload, request.Force, request.Timeout, options.Topics())
 		if err != nil {
-			return err
+			return rst, err
 		}
 		req.ID = hash
 		// after save we will ensure that this request is finished. application will have to ensure that no more
 		// topics can be added to it before that.
 		err = req.Save()
 		if err != nil {
-			return err
+			return rst, err
 		}
+		hex := hexutil.Bytes{}
+		copy(hex, hash[:])
+		rst = append(rst, hext)
 	}
-	return nil
+	return rst, nil
 }
 
 // DEPRECATED: use SendDirectMessage with DH flag

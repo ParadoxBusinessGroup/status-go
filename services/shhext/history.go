@@ -26,6 +26,10 @@ const (
 type HistoryUpdateTracker struct {
 	mu    sync.Mutex
 	store db.HistoryStore
+
+	api *PublicAPI
+
+	pendingRequests map[common.Hash]struct{}
 }
 
 // EventRequestFinished is a place holder for actual event.
@@ -40,6 +44,7 @@ type EventRequestFinished struct {
 func (tracker *HistoryUpdateTracker) handleEventRequestFinished(event EventRequestFinished) error {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
+	delete(tracker.pendingRequests, event.ID)
 	req, err := tracker.store.GetRequest(event.ID)
 	if err != nil {
 		return err
@@ -94,8 +99,10 @@ func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest
 	defer tracker.mu.Unlock()
 	topics := map[whisper.TopicType]db.TopicHistory{}
 	for i := range topicRequests {
-		// TODO doesn't exist should be ignored, other errors passed higher
-		topic, _ := tracker.store.GetHistory(topicRequests[i].Topic, topicRequests[i].Duration)
+		topic, err := tracker.store.GetHistory(topicRequests[i].Topic, topicRequests[i].Duration)
+		if err != nil {
+			return nil, err
+		}
 		topics[topicRequests[i].Topic] = topic
 	}
 	// TODO check if app wait's for any unfinished requests
