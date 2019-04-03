@@ -56,6 +56,7 @@ type TopicHistory struct {
 	First time.Time
 	// Timestamp of the last synced envelope.
 	Current time.Time
+	End     time.Time
 }
 
 // Key returns unique identifier for this TopicHistory.

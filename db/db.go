@@ -29,15 +29,24 @@ const (
 )
 
 // NewMemoryDB returns leveldb with memory backend prefixed with a bucket.
-func NewMemoryDB(bucket storagePrefix) (pdb PrefixedLevelDB, err error) {
-	db, err := leveldb.Open(storage.NewMemStorage(), nil)
+func NewMemoryDB() (*leveldb.DB, error) {
+	return leveldb.Open(storage.NewMemStorage(), nil)
+}
+
+// NewIsolatedDB returns instance that ensures isolated operations.
+func NewIsolatedDB(db *leveldb.DB, prefix storagePrefix) PrefixedLevelDB {
+	return PrefixedLevelDB{
+		db:     db,
+		prefix: prefix,
+	}
+}
+
+func NewIsolatedMemoryDB(prefix storagePrefix) (pdb PrefixedLevelDB, err error) {
+	db, err := NewMemoryDB()
 	if err != nil {
 		return pdb, err
 	}
-	return PrefixedLevelDB{
-		db:     db,
-		prefix: bucket,
-	}, nil
+	return NewIsolatedDB(db, prefix), nil
 }
 
 // Key creates a DB key for a specified service with specified data

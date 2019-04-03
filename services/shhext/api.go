@@ -591,7 +591,7 @@ func (api *PublicAPI) InitiateHistoryRequests(request InitiateHistoryRequest) ([
 		}
 		hex := hexutil.Bytes{}
 		copy(hex, hash[:])
-		rst = append(rst, hext)
+		rst = append(rst, hex)
 	}
 	return rst, nil
 }

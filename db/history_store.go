@@ -5,8 +5,17 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	whisper "github.com/status-im/whisper/whisperv6"
+	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/syndtr/goleveldb/leveldb/errors"
 )
+
+// NewHistoryStore returns HistoryStore instance.
+func NewHistoryStore(db *leveldb.DB) HistoryStore {
+	return HistoryStore{
+		topicDB:   NewIsolatedDB(db, TopicHistoryBucket),
+		requestDB: NewIsolatedDB(db, HistoryRequestBucket),
+	}
+}
 
 // HistoryStore provides utility methods for quering history and requests store.
 type HistoryStore struct {
@@ -17,7 +26,7 @@ type HistoryStore struct {
 // GetHistory creates history instance and loads history from database.
 // Returns instance populated with topic and duration if history is not found in database.
 func (h HistoryStore) GetHistory(topic whisper.TopicType, duration time.Duration) (TopicHistory, error) {
-	thist := TopicHistory{db: h.topicDB, Duration: duration, Topic: topic}
+	thist := h.NewHistory(topic, duration)
 	err := thist.Load()
 	if err != nil && err != errors.ErrNotFound {
 		return TopicHistory{}, err
@@ -28,6 +37,10 @@ func (h HistoryStore) GetHistory(topic whisper.TopicType, duration time.Duration
 // NewRequest returns instance of the HistoryRequest.
 func (h HistoryStore) NewRequest() HistoryRequest {
 	return HistoryRequest{db: h.requestDB, topicDB: h.topicDB}
+}
+
+func (h HistoryStore) NewHistory(topic whisper.TopicType, duration time.Duration) TopicHistory {
+	return TopicHistory{db: h.topicDB, Duration: duration, Topic: topic}
 }
 
 // GetRequest loads HistoryRequest from database.

@@ -10,14 +10,9 @@ import (
 )
 
 func createInMemStore(t *testing.T) HistoryStore {
-	topicdb, err := NewMemoryDB(TopicHistoryBucket)
+	db, err := NewMemoryDB()
 	require.NoError(t, err)
-	requestdb, err := NewMemoryDB(HistoryRequestBucket)
-	require.NoError(t, err)
-	return HistoryStore{
-		topicDB:   topicdb,
-		requestDB: requestdb,
-	}
+	return NewHistoryStore(db)
 }
 
 func TestGetNewHistory(t *testing.T) {

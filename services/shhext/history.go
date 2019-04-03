@@ -1,12 +1,11 @@
 package shhext
 
 import (
-	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/status-im/status-go/db"
 	"github.com/status-im/status-go/mailserver"
@@ -14,9 +13,17 @@ import (
 )
 
 const (
-	// WhisperTimeAllowance
+	// WhisperTimeAllowance is needed to ensure that we won't miss envelopes that were
+	// delivered to mail server after we made a request.
 	WhisperTimeAllowance = 20 * time.Second
 )
+
+// NewHistoryUpdateTracker creates HistoryUpdateTracker instance.
+func NewHistoryUpdateTracker(store db.HistoryStore) HistoryUpdateTracker {
+	return HistoryUpdateTracker{
+		store: store,
+	}
+}
 
 // HistoryUpdateTracker responsible for tracking progress for all history requests.
 // It listens for 2 events:
@@ -26,17 +33,11 @@ const (
 type HistoryUpdateTracker struct {
 	mu    sync.Mutex
 	store db.HistoryStore
-
-	api *PublicAPI
-
-	pendingRequests map[common.Hash]struct{}
 }
 
 // EventRequestFinished is a place holder for actual event.
-// FIXME replace it.
 type EventRequestFinished struct {
-	ID            common.Hash
-	LastTimestamp time.Time
+	ID common.Hash
 }
 
 // once request finished we need to update timestamp for all topics, so that in next request they all will start
@@ -44,7 +45,6 @@ type EventRequestFinished struct {
 func (tracker *HistoryUpdateTracker) handleEventRequestFinished(event EventRequestFinished) error {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
-	delete(tracker.pendingRequests, event.ID)
 	req, err := tracker.store.GetRequest(event.ID)
 	if err != nil {
 		return err
@@ -52,8 +52,7 @@ func (tracker *HistoryUpdateTracker) handleEventRequestFinished(event EventReque
 	histories := req.Histories()
 	for i := range histories {
 		history := histories[i]
-		// TODO add batch update
-		history.Current = event.LastTimestamp
+		history.Current = history.End
 	}
 	err = req.Save()
 	if err != nil {
@@ -62,6 +61,7 @@ func (tracker *HistoryUpdateTracker) handleEventRequestFinished(event EventReque
 	return req.Delete()
 }
 
+// EventTopicHistoryUpdate placeholder for event with a topic update.
 type EventTopicHistoryUpdate struct {
 	Topic     whisper.TopicType
 	Timestamp time.Time
@@ -75,10 +75,10 @@ func (tracker *HistoryUpdateTracker) handleEventTopicHistoryUpdate(event EventTo
 	if err != nil {
 		return err
 	}
-	// TODO support multiple ranges per topic
-	if len(histories) != 1 {
-		return errors.New("expect only single history per topic")
+	if len(histories) == 0 {
+		return fmt.Errorf("no histories for topic 0x%x", event.Topic)
 	}
+	// TODO support multiple history ranges per topic
 	th := histories[0]
 	if event.Timestamp.After(th.Current) {
 		th.Current = event.Timestamp
@@ -105,12 +105,11 @@ func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest
 		}
 		topics[topicRequests[i].Topic] = topic
 	}
-	// TODO check if app wait's for any unfinished requests
 	requests, err := tracker.store.GetAllRequests()
 	if err != nil {
 		return nil, err
 	}
-	// next remove topics that are already covered by not-finished requests.
+	// removing topcs that are already covered by any request
 	for i := range requests {
 		for _, t := range topics {
 			if requests[i].Includes(t) {
@@ -118,28 +117,29 @@ func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest
 			}
 		}
 	}
-	requests = append(requests, createRequestsFromTopicHistories(mapToList(topics))...)
-	return RenewRequests(requests), nil
+	// TODO exclude in-flight requests from 'requests' list
+	requests = append(requests, createRequestsFromTopicHistories(tracker.store, mapToList(topics))...)
+	// TODO get NTP synced timestamps
+	return RenewRequests(requests, time.Now()), nil
 }
 
-// RenewRequests re-sets current and first timestamps.
-// Changes should not be persisted on disk yet.
-func RenewRequests(requests []db.HistoryRequest) []db.HistoryRequest {
+// RenewRequests re-sets current, first and end timestamps.
+// Changes should not be persisted on disk in this method.
+func RenewRequests(requests []db.HistoryRequest, now time.Time) []db.HistoryRequest {
 	zero := time.Time{}
 	// TODO inject our ntp-synced time
-	now := time.Now()
 	for i := range requests {
 		req := requests[i]
 		histories := req.Histories()
 		for j := range histories {
-			history := histories[j]
-			//
+			history := &histories[j]
 			if history.Current == zero {
 				history.Current = now.Add(-(history.Duration))
 			}
 			if history.First == zero {
 				history.First = history.Current
 			}
+			history.End = now
 		}
 	}
 	return requests
@@ -149,14 +149,13 @@ func RenewRequests(requests []db.HistoryRequest) []db.HistoryRequest {
 func CreateTopicOptionsFromRequest(req db.HistoryRequest) TopicOptions {
 	histories := req.Histories()
 	rst := make(TopicOptions, len(histories))
-	now := time.Now()
 	for i := range histories {
 		history := histories[i]
 		rst[i] = TopicOption{
 			Topic: history.Topic,
 			Range: Range{
 				Start: uint64(history.Current.Add(-(WhisperTimeAllowance)).UnixNano()),
-				End:   uint64(now.UnixNano()),
+				End:   uint64(history.End.UnixNano()),
 			},
 		}
 	}
@@ -171,21 +170,25 @@ func mapToList(topics map[whisper.TopicType]db.TopicHistory) []db.TopicHistory {
 	return rst
 }
 
-func createRequestsFromTopicHistories(histories []db.TopicHistory) []db.HistoryRequest {
+func createRequestsFromTopicHistories(store db.HistoryStore, histories []db.TopicHistory) []db.HistoryRequest {
 	requests := []db.HistoryRequest{}
-	for _, h := range histories {
+	for _, th := range histories {
 		if len(requests) == 0 {
-			requests = append(requests, db.HistoryRequest{})
+			requests = append(requests, store.NewRequest())
 		}
 		for i := range requests {
-			req := requests[i]
+			req := &requests[i]
 			histories := req.Histories()
-			if len(histories) == 0 || histories[0].SameRange(h) {
-				req.AddHistory(h)
+			if len(histories) == 0 || histories[0].SameRange(th) {
+				req.AddHistory(th)
+			} else {
+				req := store.NewRequest()
+				req.AddHistory(th)
+				requests = append(requests, req)
 			}
 		}
 	}
-	return nil
+	return requests
 }
 
 // Range of the request.
@@ -213,11 +216,8 @@ func (options TopicOptions) ToBloomFilterOption() BloomFilterOption {
 		if opt.Range.Start > start {
 			start = opt.Range.Start
 		}
-		// just select the first one, and log errors. if error occurs this is definitely a bug.
-		if i == 0 {
+		if opt.Range.End > end {
 			end = opt.Range.End
-		} else if end != opt.Range.End {
-			log.Error("End timestamp must be the same across all options in a single request", "topic", opt.Topic, "expected", end, "got", opt.Range.End)
 		}
 	}
 
@@ -255,6 +255,5 @@ func (filter BloomFilterOption) ToMessagesRequestPayload() ([]byte, error) {
 		// This can be removed in the future.
 		Batch: true,
 	}
-
 	return rlp.EncodeToBytes(payload)
 }
