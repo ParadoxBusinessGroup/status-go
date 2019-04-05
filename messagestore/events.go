@@ -28,7 +28,7 @@ type StoreWithHistoryEvents struct {
 // Add notifies subscribers if message got persisted succesfully.
 func (store *StoreWithHistoryEvents) Add(msg *whisper.ReceivedMessage) error {
 	err := store.SQLMessageStore.Add(msg)
-	if err == nil {
+	if err == nil && msg.P2P {
 		store.feed.Send(EventHistoryPersisted{
 			Topic:     msg.Topic,
 			Timestamp: time.Unix(int64(msg.Sent), 0),

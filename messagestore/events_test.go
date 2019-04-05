@@ -30,6 +30,7 @@ func TestEvents(t *testing.T) {
 		EnvelopeHash: common.Hash{},
 		Sent:         uint32(now),
 		Topic:        whisper.TopicType{1},
+		P2P:          true,
 	}
 	require.NoError(t, eventer.Add(&msg))
 	select {

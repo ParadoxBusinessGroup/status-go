@@ -1,14 +1,18 @@
 package shhext
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/status-im/status-go/db"
 	"github.com/status-im/status-go/mailserver"
+	"github.com/status-im/status-go/messagestore"
 	whisper "github.com/status-im/whisper/whisperv6"
 )
 
@@ -245,4 +249,83 @@ func (filter BloomFilterOption) ToMessagesRequestPayload() ([]byte, error) {
 		Batch: true,
 	}
 	return rlp.EncodeToBytes(payload)
+}
+
+// NewHistoryListener returns instance of the HistoryEventListener.
+func NewHistoryListener(tracker *HistoryUpdateTracker, topicUpdates HistoryEventsProducer, requestsUpdates RequestEventsProducer) HistoryEventListener {
+	return HistoryEventListener{
+		tracker:        tracker,
+		topicUpdates:   topicUpdates,
+		requestUpdates: requestsUpdates,
+	}
+}
+
+// RequestEventsProducer produces events that track flow of history requests.
+type RequestEventsProducer interface {
+	SubscribeEnvelopeEvents(chan<- whisper.EnvelopeEvent) event.Subscription
+}
+
+// HistoryEventsProducer produces events when message is persisted.
+type HistoryEventsProducer interface {
+	Subscribe(chan<- messagestore.EventHistoryPersisted) event.Subscription
+}
+
+// HistoryEventListener is an object that keeps open subscriptions for event producers and feeds necessary
+// information to HistoryUpdateTracker.
+type HistoryEventListener struct {
+	wg   sync.WaitGroup
+	quit chan struct{}
+
+	tracker *HistoryUpdateTracker
+
+	topicUpdates   HistoryEventsProducer
+	requestUpdates RequestEventsProducer
+}
+
+// Start creates subscriptions and spawns a goroutine to consume events from them.
+// Must be called in the same thread as Stop.
+func (listener *HistoryEventListener) Start() error {
+	if listener.quit != nil {
+		return errors.New("already running")
+	}
+	listener.wg.Add(1)
+	listener.quit = make(chan struct{})
+	requests := make(chan whisper.EnvelopeEvent, 10)
+	topics := make(chan messagestore.EventHistoryPersisted, 100)
+	requestsSub := listener.requestUpdates.SubscribeEnvelopeEvents(requests)
+	topicsSub := listener.topicUpdates.Subscribe(topics)
+	go func() {
+		for {
+			select {
+			case <-listener.quit:
+				requestsSub.Unsubscribe()
+				topicsSub.Unsubscribe()
+				listener.wg.Done()
+				return
+			case ev := <-topics:
+				err := listener.tracker.UpdateTopicHistory(ev.Topic, ev.Timestamp)
+				if err != nil {
+					log.Error("failed to update history with new timestamp", "topic", ev.Topic, "timestamp", ev.Timestamp, "error", err)
+				}
+			case ev := <-requests:
+				if ev.Event != whisper.EventMailServerRequestCompleted {
+					continue
+				}
+				err := listener.tracker.UpdateFinishedRequest(ev.Hash)
+				if err != nil {
+					log.Error("failed to update request when it was finished", "id", ev.Hash, "error", err)
+				}
+			}
+		}
+	}()
+	return nil
+}
+
+// Stop consuming goroutine and wait until it exits.
+func (listener *HistoryEventListener) Stop() {
+	if listener.quit == nil {
+		return
+	}
+	close(listener.quit)
+	listener.wg.Wait()
 }
