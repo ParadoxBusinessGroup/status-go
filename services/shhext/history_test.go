@@ -120,3 +120,44 @@ func TestCreateRequestsWithExistingRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, requests, 2)
 }
+
+func TestRequestFinishedUpdate(t *testing.T) {
+	store := createInMemStore(t)
+	req := store.NewRequest()
+	req.ID = common.Hash{1}
+	now := time.Now()
+	thOne := store.NewHistory(whisper.TopicType{1}, time.Hour)
+	thOne.End = now
+	thTwo := store.NewHistory(whisper.TopicType{2}, time.Hour)
+	thTwo.End = now
+	req.AddHistory(thOne)
+	req.AddHistory(thTwo)
+	require.NoError(t, req.Save())
+
+	tracker := NewHistoryUpdateTracker(store)
+	require.NoError(t, tracker.UpdateFinishedRequest(req.ID))
+	_, err := store.GetRequest(req.ID)
+	require.EqualError(t, err, "leveldb: not found")
+
+	require.NoError(t, thOne.Load())
+	require.NoError(t, thTwo.Load())
+	require.Equal(t, thOne.End, thOne.Current)
+	require.Equal(t, thTwo.End, thTwo.Current)
+}
+
+func TestTopicHistoryUpdate(t *testing.T) {
+	store := createInMemStore(t)
+	th := store.NewHistory(whisper.TopicType{1}, time.Hour)
+	require.NoError(t, th.Save())
+	tracker := NewHistoryUpdateTracker(store)
+	now := time.Now()
+	hour := now.Add(time.Hour)
+
+	require.NoError(t, tracker.UpdateTopicHistory(th.Topic, hour))
+	require.NoError(t, th.Load())
+	require.Equal(t, hour.Unix(), th.Current.Unix())
+
+	require.NoError(t, tracker.UpdateTopicHistory(th.Topic, now))
+	require.NoError(t, th.Load())
+	require.Equal(t, hour.Unix(), th.Current.Unix())
+}

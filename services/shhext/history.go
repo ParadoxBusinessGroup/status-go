@@ -35,23 +35,18 @@ type HistoryUpdateTracker struct {
 	store db.HistoryStore
 }
 
-// EventRequestFinished is a place holder for actual event.
-type EventRequestFinished struct {
-	ID common.Hash
-}
-
-// once request finished we need to update timestamp for all topics, so that in next request they all will start
-// from same timestamp.
-func (tracker *HistoryUpdateTracker) handleEventRequestFinished(event EventRequestFinished) error {
+// UpdateFinishedRequest removes succesfully finished request and updates every topic
+// attached to the request.
+func (tracker *HistoryUpdateTracker) UpdateFinishedRequest(id common.Hash) error {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
-	req, err := tracker.store.GetRequest(event.ID)
+	req, err := tracker.store.GetRequest(id)
 	if err != nil {
 		return err
 	}
 	histories := req.Histories()
 	for i := range histories {
-		history := histories[i]
+		history := &histories[i]
 		history.Current = history.End
 	}
 	err = req.Save()
@@ -61,27 +56,21 @@ func (tracker *HistoryUpdateTracker) handleEventRequestFinished(event EventReque
 	return req.Delete()
 }
 
-// EventTopicHistoryUpdate placeholder for event with a topic update.
-type EventTopicHistoryUpdate struct {
-	Topic     whisper.TopicType
-	Timestamp time.Time
-}
-
-// get all topics that start from given Topic update Timestamp if it is higher than Current
-func (tracker *HistoryUpdateTracker) handleEventTopicHistoryUpdate(event EventTopicHistoryUpdate) error {
+// UpdateTopicHistory updates Current timestamp for the TopicHistory with a given timestamp.
+func (tracker *HistoryUpdateTracker) UpdateTopicHistory(topic whisper.TopicType, timestamp time.Time) error {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
-	histories, err := tracker.store.GetHistoriesByTopic(event.Topic)
+	histories, err := tracker.store.GetHistoriesByTopic(topic)
 	if err != nil {
 		return err
 	}
 	if len(histories) == 0 {
-		return fmt.Errorf("no histories for topic 0x%x", event.Topic)
+		return fmt.Errorf("no histories for topic 0x%x", topic)
 	}
 	// TODO support multiple history ranges per topic
 	th := histories[0]
-	if event.Timestamp.After(th.Current) {
-		th.Current = event.Timestamp
+	if timestamp.After(th.Current) {
+		th.Current = timestamp
 	}
 	return th.Save()
 }
