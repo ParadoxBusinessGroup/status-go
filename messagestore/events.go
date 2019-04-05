@@ -3,6 +3,7 @@ package messagestore
 import (
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/event"
 	whisper "github.com/status-im/whisper/whisperv6"
 )
@@ -11,6 +12,7 @@ import (
 type EventHistoryPersisted struct {
 	Topic     whisper.TopicType
 	Timestamp time.Time
+	Hash      common.Hash
 }
 
 // NewStoreWithHistoryEvents returns instance of the StoreWithHistoryEvents.
@@ -30,6 +32,7 @@ func (store *StoreWithHistoryEvents) Add(msg *whisper.ReceivedMessage) error {
 	err := store.SQLMessageStore.Add(msg)
 	if err == nil && msg.P2P {
 		store.feed.Send(EventHistoryPersisted{
+			Hash:      msg.EnvelopeHash,
 			Topic:     msg.Topic,
 			Timestamp: time.Unix(int64(msg.Sent), 0),
 		})

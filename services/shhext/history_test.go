@@ -135,7 +135,9 @@ func TestRequestFinishedUpdate(t *testing.T) {
 	require.NoError(t, req.Save())
 
 	tracker := NewHistoryUpdateTracker(store)
-	require.NoError(t, tracker.UpdateFinishedRequest(req.ID))
+	last := common.Hash{255}
+	require.NoError(t, tracker.UpdateFinishedRequest(req.ID, last))
+	require.NoError(t, tracker.UpdateTopicHistory(thOne.Topic, now, last))
 	_, err := store.GetRequest(req.ID)
 	require.EqualError(t, err, "leveldb: not found")
 
@@ -153,11 +155,11 @@ func TestTopicHistoryUpdate(t *testing.T) {
 	now := time.Now()
 	hour := now.Add(time.Hour)
 
-	require.NoError(t, tracker.UpdateTopicHistory(th.Topic, hour))
+	require.NoError(t, tracker.UpdateTopicHistory(th.Topic, hour, common.Hash{3}))
 	require.NoError(t, th.Load())
 	require.Equal(t, hour.Unix(), th.Current.Unix())
 
-	require.NoError(t, tracker.UpdateTopicHistory(th.Topic, now))
+	require.NoError(t, tracker.UpdateTopicHistory(th.Topic, now, common.Hash{4}))
 	require.NoError(t, th.Load())
 	require.Equal(t, hour.Unix(), th.Current.Unix())
 }

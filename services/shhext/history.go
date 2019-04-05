@@ -41,27 +41,30 @@ type HistoryUpdateTracker struct {
 
 // UpdateFinishedRequest removes succesfully finished request and updates every topic
 // attached to the request.
-func (tracker *HistoryUpdateTracker) UpdateFinishedRequest(id common.Hash) error {
+func (tracker *HistoryUpdateTracker) UpdateFinishedRequest(id common.Hash, hash common.Hash) error {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	req, err := tracker.store.GetRequest(id)
 	if err != nil {
 		return err
 	}
+	// event was received once we processed all envelopes related to this event
 	histories := req.Histories()
 	for i := range histories {
-		history := &histories[i]
-		history.Current = history.End
+		th := &histories[i]
+		if th.LastEnvelopeHash == hash {
+			return req.Delete()
+		}
 	}
-	err = req.Save()
-	if err != nil {
-		return err
-	}
-	return req.Delete()
+	// if any of the topics already received LastEnvelopeHash we know that request is finished
+	// and we can safely remove request. If it is not finished then we need to wait for that LastTimestamp.
+	// and we do that in UpdateTopicHistory method
+	req.LastEnvelopeHash = hash
+	return req.Save()
 }
 
 // UpdateTopicHistory updates Current timestamp for the TopicHistory with a given timestamp.
-func (tracker *HistoryUpdateTracker) UpdateTopicHistory(topic whisper.TopicType, timestamp time.Time) error {
+func (tracker *HistoryUpdateTracker) UpdateTopicHistory(topic whisper.TopicType, timestamp time.Time, envelopeHash common.Hash) error {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	histories, err := tracker.store.GetHistoriesByTopic(topic)
@@ -75,8 +78,31 @@ func (tracker *HistoryUpdateTracker) UpdateTopicHistory(topic whisper.TopicType,
 	th := histories[0]
 	if timestamp.After(th.Current) {
 		th.Current = timestamp
+		th.LastEnvelopeHash = envelopeHash
 	}
-	return th.Save()
+	err = th.Save()
+	if err != nil {
+		return err
+	}
+	// this case could happen only iff envelopes were delivered out of order
+	// last envelope received, request completed, then others envelopes received
+	// request complted, last envelope received, and then others envelopes received
+	if (th.RequestID == common.Hash{}) {
+		return nil
+	}
+	req, err := tracker.store.GetRequest(th.RequestID)
+	if err != nil {
+		return err
+	}
+	// we didn't receive event that request got finished yet
+	if (req.LastEnvelopeHash == common.Hash{}) {
+		return nil
+	}
+	// in this case we already processed event that request was finished
+	if req.LastEnvelopeHash == envelopeHash {
+		return req.Delete()
+	}
+	return nil
 }
 
 // TopicRequest defines what user has to provide.
@@ -303,7 +329,7 @@ func (listener *HistoryEventListener) Start() error {
 				listener.wg.Done()
 				return
 			case ev := <-topics:
-				err := listener.tracker.UpdateTopicHistory(ev.Topic, ev.Timestamp)
+				err := listener.tracker.UpdateTopicHistory(ev.Topic, ev.Timestamp, ev.Hash)
 				if err != nil {
 					log.Error("failed to update history with new timestamp", "topic", ev.Topic, "timestamp", ev.Timestamp, "error", err)
 				}
@@ -311,7 +337,8 @@ func (listener *HistoryEventListener) Start() error {
 				if ev.Event != whisper.EventMailServerRequestCompleted {
 					continue
 				}
-				err := listener.tracker.UpdateFinishedRequest(ev.Hash)
+				data := ev.Data.(*whisper.MailServerResponse)
+				err := listener.tracker.UpdateFinishedRequest(ev.Hash, data.LastEnvelopeHash)
 				if err != nil {
 					log.Error("failed to update request when it was finished", "id", ev.Hash, "error", err)
 				}

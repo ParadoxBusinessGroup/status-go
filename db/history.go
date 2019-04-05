@@ -50,6 +50,8 @@ type TopicHistory struct {
 	// whisper topic
 	Topic whisper.TopicType
 
+	LastEnvelopeHash common.Hash
+
 	Duration time.Duration
 	// Timestamp that was used for the first request with this topic.
 	// Used to identify overlapping ranges.
@@ -57,6 +59,8 @@ type TopicHistory struct {
 	// Timestamp of the last synced envelope.
 	Current time.Time
 	End     time.Time
+
+	RequestID common.Hash
 }
 
 // Key returns unique identifier for this TopicHistory.
@@ -118,6 +122,7 @@ type HistoryRequest struct {
 	ID common.Hash
 	// List of the topics
 	TopicHistoryKeys []TopicHistoryKey
+	LastEnvelopeHash common.Hash
 }
 
 // AddHistory adds instance to internal list of instance and add instance key to the list
@@ -140,8 +145,10 @@ func (req HistoryRequest) Value() ([]byte, error) {
 
 // Save persists all attached histories and request itself on the disk.
 func (req HistoryRequest) Save() error {
-	for _, h := range req.histories {
-		if err := h.Save(); err != nil {
+	for i := range req.histories {
+		th := &req.histories[i]
+		th.RequestID = req.ID
+		if err := th.Save(); err != nil {
 			return err
 		}
 	}
@@ -152,7 +159,16 @@ func (req HistoryRequest) Save() error {
 	return req.db.Put(req.ID.Bytes(), val)
 }
 
+// Delete HistoryRequest from store and update every topic.
 func (req HistoryRequest) Delete() error {
+	for i := range req.histories {
+		th := &req.histories[i]
+		th.RequestID = common.Hash{}
+		th.Current = th.End
+		if err := th.Save(); err != nil {
+			return err
+		}
+	}
 	return req.db.Delete(req.ID.Bytes())
 }
 
