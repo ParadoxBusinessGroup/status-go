@@ -93,7 +93,7 @@ func TestBloomFilterToMessageRequestPayload(t *testing.T) {
 }
 
 func TestCreateRequestsEmptyState(t *testing.T) {
-	tracker := NewHistoryUpdateTracker(createInMemStore(t))
+	tracker := NewHistoryUpdateTracker(createInMemStore(t), NewRequestsRegistry(0), time.Now)
 	requests, err := tracker.CreateRequests([]TopicRequest{
 		{Topic: whisper.TopicType{1}, Duration: time.Hour},
 		{Topic: whisper.TopicType{2}, Duration: time.Hour},
@@ -111,7 +111,7 @@ func TestCreateRequestsWithExistingRequest(t *testing.T) {
 	th := store.NewHistory(whisper.TopicType{1}, time.Hour)
 	req.AddHistory(th)
 	require.NoError(t, req.Save())
-	tracker := NewHistoryUpdateTracker(store)
+	tracker := NewHistoryUpdateTracker(store, NewRequestsRegistry(0), time.Now)
 	requests, err := tracker.CreateRequests([]TopicRequest{
 		{Topic: whisper.TopicType{1}, Duration: time.Hour},
 		{Topic: whisper.TopicType{2}, Duration: time.Hour},
@@ -134,7 +134,7 @@ func TestRequestFinishedUpdate(t *testing.T) {
 	req.AddHistory(thTwo)
 	require.NoError(t, req.Save())
 
-	tracker := NewHistoryUpdateTracker(store)
+	tracker := NewHistoryUpdateTracker(store, NewRequestsRegistry(0), time.Now)
 	last := common.Hash{255}
 	require.NoError(t, tracker.UpdateFinishedRequest(req.ID, last))
 	require.NoError(t, tracker.UpdateTopicHistory(thOne.Topic, now, last))
@@ -151,7 +151,7 @@ func TestTopicHistoryUpdate(t *testing.T) {
 	store := createInMemStore(t)
 	th := store.NewHistory(whisper.TopicType{1}, time.Hour)
 	require.NoError(t, th.Save())
-	tracker := NewHistoryUpdateTracker(store)
+	tracker := NewHistoryUpdateTracker(store, NewRequestsRegistry(0), time.Now)
 	now := time.Now()
 	hour := now.Add(time.Hour)
 

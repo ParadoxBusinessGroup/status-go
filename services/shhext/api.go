@@ -541,7 +541,6 @@ func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload
 	hash = envelope.Hash()
 
 	if force {
-		// FIXME
 		err = api.service.requestsRegistry.Register(hash, topics)
 		if err != nil {
 			return hash, err

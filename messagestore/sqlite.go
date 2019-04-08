@@ -56,26 +56,26 @@ func (store SQLMessageStore) migrate() error {
 }
 
 // Add upserts received message into table with received messages.
-func (store SQLMessageStore) Add(msg *whisper.ReceivedMessage) error {
+func (store SQLMessageStore) Add(enckey string, msg *whisper.ReceivedMessage) error {
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	stmt, err := store.db.Prepare("INSERT OR REPLACE INTO whisper_received_messages(hash, body) VALUES (?, ?)")
+	stmt, err := store.db.Prepare("INSERT OR REPLACE INTO whisper_received_messages(hash, enckey, body) VALUES (?, ?, ?)")
 	if err != nil {
 		return err
 	}
-	_, err = stmt.Exec(msg.EnvelopeHash[:], body)
+	_, err = stmt.Exec(msg.EnvelopeHash[:], enckey, body)
 	return err
 }
 
 // Pop reads every row from table with received messages and clears it afterwards.
-func (store SQLMessageStore) Pop() ([]*whisper.ReceivedMessage, error) {
+func (store SQLMessageStore) Pop(enckey string) ([]*whisper.ReceivedMessage, error) {
 	tx, err := store.db.Begin()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query("SELECT body FROM whisper_received_messages")
+	rows, err := tx.Query("SELECT body FROM whisper_received_messages WHERE enckey = ?", enckey)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ func (store SQLMessageStore) Pop() ([]*whisper.ReceivedMessage, error) {
 		}
 		rst = append(rst, &msg)
 	}
-	_, err = tx.Exec("DELETE FROM whisper_received_messages")
+	_, err = tx.Exec("DELETE FROM whisper_received_messages WHERE enckey = ?", enckey)
 	if err != nil {
 		return nil, err
 	}
@@ -102,4 +102,25 @@ func (store SQLMessageStore) Pop() ([]*whisper.ReceivedMessage, error) {
 		return nil, err
 	}
 	return rst, nil
+}
+
+// NewIsolated returns sql store where operations are isolated using provided key.
+func (store SQLMessageStore) NewIsolated(enckey string) whisper.MessageStore {
+	return limitedWithAKey{
+		store:  store,
+		enckey: enckey,
+	}
+}
+
+type limitedWithAKey struct {
+	store  SQLMessageStore
+	enckey string
+}
+
+func (store limitedWithAKey) Add(msg *whisper.ReceivedMessage) error {
+	return store.store.Add(store.enckey, msg)
+}
+
+func (store limitedWithAKey) Pop() ([]*whisper.ReceivedMessage, error) {
+	return store.store.Pop(store.enckey)
 }

@@ -13,10 +13,13 @@ import (
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rpc"
+	"github.com/status-im/status-go/db"
+	"github.com/status-im/status-go/messagestore"
 	"github.com/status-im/status-go/params"
 	"github.com/status-im/status-go/services/shhext/chat"
 	"github.com/status-im/status-go/services/shhext/dedup"
 	"github.com/status-im/status-go/services/shhext/mailservers"
+	"github.com/status-im/status-go/sqlite"
 	whisper "github.com/status-im/whisper/whisperv6"
 	"github.com/syndtr/goleveldb/leveldb"
 	"golang.org/x/crypto/sha3"
@@ -41,18 +44,20 @@ type EnvelopeEventsHandler interface {
 
 // Service is a service that provides some additional Whisper API.
 type Service struct {
-	w                *whisper.Whisper
-	config           params.ShhextConfig
-	envelopesMonitor *EnvelopesMonitor
-	mailMonitor      *MailRequestMonitor
-	requestsRegistry *RequestsRegistry
-	server           *p2p.Server
-	nodeID           *ecdsa.PrivateKey
-	deduplicator     *dedup.Deduplicator
-	protocol         *chat.ProtocolService
-	dataDir          string
-	installationID   string
-	pfsEnabled       bool
+	w                      *whisper.Whisper
+	config                 params.ShhextConfig
+	envelopesMonitor       *EnvelopesMonitor
+	mailMonitor            *MailRequestMonitor
+	requestsRegistry       *RequestsRegistry
+	historyUpdates         *HistoryUpdateTracker
+	historyUpdatesListener *HistoryEventListener
+	server                 *p2p.Server
+	nodeID                 *ecdsa.PrivateKey
+	deduplicator           *dedup.Deduplicator
+	protocol               *chat.ProtocolService
+	dataDir                string
+	installationID         string
+	pfsEnabled             bool
 
 	peerStore       *mailservers.PeerStore
 	cache           *mailservers.Cache
@@ -64,14 +69,15 @@ type Service struct {
 var _ node.Service = (*Service)(nil)
 
 // New returns a new Service. dataDir is a folder path to a network-independent location
-func New(w *whisper.Whisper, handler EnvelopeEventsHandler, db *leveldb.DB, config params.ShhextConfig) *Service {
-	cache := mailservers.NewCache(db)
+func New(w *whisper.Whisper, handler EnvelopeEventsHandler, ldb *leveldb.DB, config params.ShhextConfig) *Service {
+	cache := mailservers.NewCache(ldb)
 	ps := mailservers.NewPeerStore(cache)
 	delay := defaultRequestsDelay
 	if config.RequestsDelay != 0 {
 		delay = config.RequestsDelay
 	}
 	requestsRegistry := NewRequestsRegistry(delay)
+	historyUpdates := NewHistoryUpdateTracker(db.NewHistoryStore(ldb), requestsRegistry, w.GetCurrentTime)
 	mailMonitor := &MailRequestMonitor{
 		w:                w,
 		handler:          handler,
@@ -85,7 +91,8 @@ func New(w *whisper.Whisper, handler EnvelopeEventsHandler, db *leveldb.DB, conf
 		envelopesMonitor: envelopesMonitor,
 		mailMonitor:      mailMonitor,
 		requestsRegistry: requestsRegistry,
-		deduplicator:     dedup.NewDeduplicator(w, db),
+		historyUpdates:   historyUpdates,
+		deduplicator:     dedup.NewDeduplicator(w, ldb),
 		dataDir:          config.BackupDisabledDataDir,
 		installationID:   config.InstallationID,
 		pfsEnabled:       config.PFSEnabled,
@@ -110,6 +117,26 @@ func (s *Service) Protocols() []p2p.Protocol {
 	return []p2p.Protocol{}
 }
 
+func (s *Service) initWhisperCache(encKey string) error {
+	if len(s.config.WhisperCacheDir) == 0 {
+		return nil
+	}
+	sqldb, err := sqlite.OpenDB(filepath.Join(s.config.WhisperCacheDir, "whisper.db"), encKey)
+	if err != nil {
+		return err
+	}
+	sqlstore, err := messagestore.InitializeSQLMessageStore(sqldb)
+	if err != nil {
+		return err
+	}
+	events := messagestore.NewStoreWithHistoryEvents(sqlstore)
+	s.w.SetMessageStore(func(enckey string) whisper.MessageStore {
+		return events.NewIsolated(enckey)
+	})
+	s.historyUpdatesListener = NewHistoryListener(s.historyUpdates, events, s.w)
+	return s.historyUpdatesListener.Start()
+}
+
 // InitProtocolWithPassword creates an instance of ProtocolService given an address and password used to generate an encryption key.
 func (s *Service) InitProtocolWithPassword(address string, password string) error {
 	digest := sha3.Sum256([]byte(password))
@@ -123,6 +150,9 @@ func (s *Service) InitProtocolWithEncyptionKey(address string, encKey string) er
 }
 
 func (s *Service) initProtocol(address, encKey, password string) error {
+	if err := s.initWhisperCache(encKey); err != nil {
+		return err
+	}
 	if !s.pfsEnabled {
 		return nil
 	}
@@ -283,6 +313,7 @@ func (s *Service) Stop() error {
 	if s.config.EnableLastUsedMonitor {
 		s.lastUsedMonitor.Stop()
 	}
+	s.historyUpdatesListener.Stop()
 	s.requestsRegistry.Clear()
 	s.envelopesMonitor.Stop()
 	s.mailMonitor.Stop()

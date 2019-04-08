@@ -20,9 +20,10 @@ func TestEvents(t *testing.T) {
 	require.NoError(t, err)
 	store, err := InitializeSQLMessageStore(db)
 
-	eventer := NewStoreWithHistoryEvents(store)
+	feed := NewStoreWithFeed(store)
+	eventer := feed.NewIsolated("test")
 	events := make(chan EventHistoryPersisted, 1)
-	sub := eventer.Subscribe(events)
+	sub := feed.Subscribe(events)
 	defer sub.Unsubscribe()
 
 	now := time.Now().Unix()

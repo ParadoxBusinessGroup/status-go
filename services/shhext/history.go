@@ -22,10 +22,15 @@ const (
 	WhisperTimeAllowance = 20 * time.Second
 )
 
+// TimeSource is a function that returns current time.
+type TimeSource func() time.Time
+
 // NewHistoryUpdateTracker creates HistoryUpdateTracker instance.
-func NewHistoryUpdateTracker(store db.HistoryStore) HistoryUpdateTracker {
-	return HistoryUpdateTracker{
-		store: store,
+func NewHistoryUpdateTracker(store db.HistoryStore, registry *RequestsRegistry, timeSource TimeSource) *HistoryUpdateTracker {
+	return &HistoryUpdateTracker{
+		store:            store,
+		requestsRegistry: registry,
+		timeSource:       timeSource,
 	}
 }
 
@@ -35,8 +40,10 @@ func NewHistoryUpdateTracker(store db.HistoryStore) HistoryUpdateTracker {
 //    - when confirmation for request completion is received - we will set last envelope timestamp as the last timestamp
 //      for all TopicLists in current request.
 type HistoryUpdateTracker struct {
-	mu    sync.Mutex
-	store db.HistoryStore
+	mu               sync.Mutex
+	store            db.HistoryStore
+	requestsRegistry *RequestsRegistry
+	timeSource       TimeSource
 }
 
 // UpdateFinishedRequest removes succesfully finished request and updates every topic
@@ -139,7 +146,7 @@ func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest
 	// TODO exclude in-flight requests from 'requests' list
 	requests = append(requests, createRequestsFromTopicHistories(tracker.store, mapToList(topics))...)
 	// TODO get NTP synced timestamps
-	return RenewRequests(requests, time.Now()), nil
+	return RenewRequests(requests, tracker.timeSource()), nil
 }
 
 // RenewRequests re-sets current, first and end timestamps.
@@ -278,8 +285,8 @@ func (filter BloomFilterOption) ToMessagesRequestPayload() ([]byte, error) {
 }
 
 // NewHistoryListener returns instance of the HistoryEventListener.
-func NewHistoryListener(tracker *HistoryUpdateTracker, topicUpdates HistoryEventsProducer, requestsUpdates RequestEventsProducer) HistoryEventListener {
-	return HistoryEventListener{
+func NewHistoryListener(tracker *HistoryUpdateTracker, topicUpdates HistoryEventsProducer, requestsUpdates RequestEventsProducer) *HistoryEventListener {
+	return &HistoryEventListener{
 		tracker:        tracker,
 		topicUpdates:   topicUpdates,
 		requestUpdates: requestsUpdates,

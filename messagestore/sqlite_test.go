@@ -20,8 +20,8 @@ func TestMessageStore(t *testing.T) {
 	store, err := InitializeSQLMessageStore(db)
 	require.NoError(t, err)
 	msg := &whisperv6.ReceivedMessage{EnvelopeHash: common.Hash{1}, Payload: []byte{1, 2, 3}}
-	require.NoError(t, store.Add(msg))
-	msgs, err := store.Pop()
+	require.NoError(t, store.Add("test", msg))
+	msgs, err := store.Pop("test")
 	require.NoError(t, err)
 	require.Len(t, msgs, 1)
 	require.Equal(t, msg.EnvelopeHash, msgs[0].EnvelopeHash)
