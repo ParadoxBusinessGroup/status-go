@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
@@ -363,7 +364,7 @@ func (api *PublicWhisperAPI) Messages(ctx context.Context, crit Criteria) (*rpc.
 
 	filter := Filter{
 		PoW:      crit.MinPow,
-		Messages: api.w.NewMessageStore(),
+		Messages: make(map[common.Hash]*ReceivedMessage),
 		AllowP2P: crit.AllowP2P,
 	}
 
@@ -586,7 +587,7 @@ func (api *PublicWhisperAPI) NewMessageFilter(req Criteria) (string, error) {
 		PoW:      req.MinPow,
 		AllowP2P: req.AllowP2P,
 		Topics:   topics,
-		Messages: api.w.NewMessageStore(),
+		Messages: make(map[common.Hash]*ReceivedMessage),
 	}
 
 	id, err := api.w.Subscribe(f)
