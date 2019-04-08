@@ -420,6 +420,12 @@ func (api *PublicAPI) GetNewFilterMessages(filterID string) ([]dedup.Deduplicate
 // ConfirmMessagesProcessed is a method to confirm that messages was consumed by
 // the client side.
 func (api *PublicAPI) ConfirmMessagesProcessed(messages []*whisper.Message) error {
+	for _, msg := range messages {
+		err := api.service.historyUpdates.UpdateTopicHistory(msg.Topic, time.Unix(int64(msg.Timestamp), 0), common.BytesToHash(msg.Hash))
+		if err != nil {
+			return err
+		}
+	}
 	return api.service.deduplicator.AddMessages(messages)
 }
 

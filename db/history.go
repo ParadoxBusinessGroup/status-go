@@ -182,6 +182,10 @@ func (req *HistoryRequest) Load() error {
 	if err != nil {
 		return err
 	}
+	return req.loadHistories()
+}
+
+func (req *HistoryRequest) loadHistories() error {
 	for _, hk := range req.TopicHistoryKeys {
 		th, err := LoadTopicHistoryFromKey(req.topicDB, hk)
 		if err != nil {
@@ -193,9 +197,13 @@ func (req *HistoryRequest) Load() error {
 }
 
 // RawUnmarshall unmarshall given bytes into the structure.
-// TODO add use case here
+// Used in range queries to unmarshall content of the iter.Value directly into request struct.
 func (req *HistoryRequest) RawUnmarshall(val []byte) error {
-	return json.Unmarshal(val, req)
+	err := json.Unmarshal(val, req)
+	if err != nil {
+		return err
+	}
+	return req.loadHistories()
 }
 
 // Includes checks if TopicHistory is included into the request.

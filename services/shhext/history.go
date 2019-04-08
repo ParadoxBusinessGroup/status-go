@@ -12,7 +12,6 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/status-im/status-go/db"
 	"github.com/status-im/status-go/mailserver"
-	"github.com/status-im/status-go/messagestore"
 	whisper "github.com/status-im/whisper/whisperv6"
 )
 
@@ -28,9 +27,9 @@ type TimeSource func() time.Time
 // NewHistoryUpdateTracker creates HistoryUpdateTracker instance.
 func NewHistoryUpdateTracker(store db.HistoryStore, registry *RequestsRegistry, timeSource TimeSource) *HistoryUpdateTracker {
 	return &HistoryUpdateTracker{
-		store:            store,
-		requestsRegistry: registry,
-		timeSource:       timeSource,
+		store:      store,
+		registry:   registry,
+		timeSource: timeSource,
 	}
 }
 
@@ -40,10 +39,10 @@ func NewHistoryUpdateTracker(store db.HistoryStore, registry *RequestsRegistry, 
 //    - when confirmation for request completion is received - we will set last envelope timestamp as the last timestamp
 //      for all TopicLists in current request.
 type HistoryUpdateTracker struct {
-	mu               sync.Mutex
-	store            db.HistoryStore
-	requestsRegistry *RequestsRegistry
-	timeSource       TimeSource
+	mu         sync.Mutex
+	store      db.HistoryStore
+	registry   *RequestsRegistry
+	timeSource TimeSource
 }
 
 // UpdateFinishedRequest removes succesfully finished request and updates every topic
@@ -135,18 +134,20 @@ func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest
 	if err != nil {
 		return nil, err
 	}
-	// removing topcs that are already covered by any request
+	filtered := []db.HistoryRequest{}
 	for i := range requests {
+		req := requests[i]
 		for _, t := range topics {
-			if requests[i].Includes(t) {
+			if req.Includes(t) {
 				delete(topics, t.Topic)
 			}
 		}
+		if !tracker.registry.Has(req.ID) {
+			filtered = append(filtered, req)
+		}
 	}
-	// TODO exclude in-flight requests from 'requests' list
-	requests = append(requests, createRequestsFromTopicHistories(tracker.store, mapToList(topics))...)
-	// TODO get NTP synced timestamps
-	return RenewRequests(requests, tracker.timeSource()), nil
+	filtered = append(filtered, createRequestsFromTopicHistories(tracker.store, mapToList(topics))...)
+	return RenewRequests(filtered, tracker.timeSource()), nil
 }
 
 // RenewRequests re-sets current, first and end timestamps.
@@ -285,10 +286,9 @@ func (filter BloomFilterOption) ToMessagesRequestPayload() ([]byte, error) {
 }
 
 // NewHistoryListener returns instance of the HistoryEventListener.
-func NewHistoryListener(tracker *HistoryUpdateTracker, topicUpdates HistoryEventsProducer, requestsUpdates RequestEventsProducer) *HistoryEventListener {
+func NewHistoryListener(tracker *HistoryUpdateTracker, requestsUpdates RequestEventsProducer) *HistoryEventListener {
 	return &HistoryEventListener{
 		tracker:        tracker,
-		topicUpdates:   topicUpdates,
 		requestUpdates: requestsUpdates,
 	}
 }
@@ -296,11 +296,6 @@ func NewHistoryListener(tracker *HistoryUpdateTracker, topicUpdates HistoryEvent
 // RequestEventsProducer produces events that track flow of history requests.
 type RequestEventsProducer interface {
 	SubscribeEnvelopeEvents(chan<- whisper.EnvelopeEvent) event.Subscription
-}
-
-// HistoryEventsProducer produces events when message is persisted.
-type HistoryEventsProducer interface {
-	Subscribe(chan<- messagestore.EventHistoryPersisted) event.Subscription
 }
 
 // HistoryEventListener is an object that keeps open subscriptions for event producers and feeds necessary
@@ -311,7 +306,6 @@ type HistoryEventListener struct {
 
 	tracker *HistoryUpdateTracker
 
-	topicUpdates   HistoryEventsProducer
 	requestUpdates RequestEventsProducer
 }
 
@@ -324,22 +318,14 @@ func (listener *HistoryEventListener) Start() error {
 	listener.wg.Add(1)
 	listener.quit = make(chan struct{})
 	requests := make(chan whisper.EnvelopeEvent, 10)
-	topics := make(chan messagestore.EventHistoryPersisted, 100)
 	requestsSub := listener.requestUpdates.SubscribeEnvelopeEvents(requests)
-	topicsSub := listener.topicUpdates.Subscribe(topics)
 	go func() {
 		for {
 			select {
 			case <-listener.quit:
 				requestsSub.Unsubscribe()
-				topicsSub.Unsubscribe()
 				listener.wg.Done()
 				return
-			case ev := <-topics:
-				err := listener.tracker.UpdateTopicHistory(ev.Topic, ev.Timestamp, ev.Hash)
-				if err != nil {
-					log.Error("failed to update history with new timestamp", "topic", ev.Topic, "timestamp", ev.Timestamp, "error", err)
-				}
 			case ev := <-requests:
 				if ev.Event != whisper.EventMailServerRequestCompleted {
 					continue

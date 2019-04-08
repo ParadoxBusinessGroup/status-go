@@ -14,12 +14,10 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/status-im/status-go/db"
-	"github.com/status-im/status-go/messagestore"
 	"github.com/status-im/status-go/params"
 	"github.com/status-im/status-go/services/shhext/chat"
 	"github.com/status-im/status-go/services/shhext/dedup"
 	"github.com/status-im/status-go/services/shhext/mailservers"
-	"github.com/status-im/status-go/sqlite"
 	whisper "github.com/status-im/whisper/whisperv6"
 	"github.com/syndtr/goleveldb/leveldb"
 	"golang.org/x/crypto/sha3"
@@ -78,6 +76,7 @@ func New(w *whisper.Whisper, handler EnvelopeEventsHandler, ldb *leveldb.DB, con
 	}
 	requestsRegistry := NewRequestsRegistry(delay)
 	historyUpdates := NewHistoryUpdateTracker(db.NewHistoryStore(ldb), requestsRegistry, w.GetCurrentTime)
+	historyUpdatesListener := NewHistoryListener(historyUpdates, w)
 	mailMonitor := &MailRequestMonitor{
 		w:                w,
 		handler:          handler,
@@ -86,18 +85,19 @@ func New(w *whisper.Whisper, handler EnvelopeEventsHandler, ldb *leveldb.DB, con
 	}
 	envelopesMonitor := NewEnvelopesMonitor(w, handler, config.MailServerConfirmations, ps, config.MaxMessageDeliveryAttempts)
 	return &Service{
-		w:                w,
-		config:           config,
-		envelopesMonitor: envelopesMonitor,
-		mailMonitor:      mailMonitor,
-		requestsRegistry: requestsRegistry,
-		historyUpdates:   historyUpdates,
-		deduplicator:     dedup.NewDeduplicator(w, ldb),
-		dataDir:          config.BackupDisabledDataDir,
-		installationID:   config.InstallationID,
-		pfsEnabled:       config.PFSEnabled,
-		peerStore:        ps,
-		cache:            cache,
+		w:                      w,
+		config:                 config,
+		envelopesMonitor:       envelopesMonitor,
+		mailMonitor:            mailMonitor,
+		requestsRegistry:       requestsRegistry,
+		historyUpdates:         historyUpdates,
+		historyUpdatesListener: historyUpdatesListener,
+		deduplicator:           dedup.NewDeduplicator(w, ldb),
+		dataDir:                config.BackupDisabledDataDir,
+		installationID:         config.InstallationID,
+		pfsEnabled:             config.PFSEnabled,
+		peerStore:              ps,
+		cache:                  cache,
 	}
 }
 
@@ -117,26 +117,6 @@ func (s *Service) Protocols() []p2p.Protocol {
 	return []p2p.Protocol{}
 }
 
-func (s *Service) initWhisperCache(encKey string) error {
-	if len(s.config.WhisperCacheDir) == 0 {
-		return nil
-	}
-	sqldb, err := sqlite.OpenDB(filepath.Join(s.config.WhisperCacheDir, "whisper.db"), encKey)
-	if err != nil {
-		return err
-	}
-	sqlstore, err := messagestore.InitializeSQLMessageStore(sqldb)
-	if err != nil {
-		return err
-	}
-	events := messagestore.NewStoreWithHistoryEvents(sqlstore)
-	s.w.SetMessageStore(func(enckey string) whisper.MessageStore {
-		return events.NewIsolated(enckey)
-	})
-	s.historyUpdatesListener = NewHistoryListener(s.historyUpdates, events, s.w)
-	return s.historyUpdatesListener.Start()
-}
-
 // InitProtocolWithPassword creates an instance of ProtocolService given an address and password used to generate an encryption key.
 func (s *Service) InitProtocolWithPassword(address string, password string) error {
 	digest := sha3.Sum256([]byte(password))
@@ -150,9 +130,6 @@ func (s *Service) InitProtocolWithEncyptionKey(address string, encKey string) er
 }
 
 func (s *Service) initProtocol(address, encKey, password string) error {
-	if err := s.initWhisperCache(encKey); err != nil {
-		return err
-	}
 	if !s.pfsEnabled {
 		return nil
 	}
@@ -296,6 +273,9 @@ func (s *Service) Start(server *p2p.Server) error {
 	if s.config.EnableLastUsedMonitor {
 		s.lastUsedMonitor = mailservers.NewLastUsedConnectionMonitor(s.peerStore, s.cache, s.w)
 		s.lastUsedMonitor.Start()
+	}
+	if err := s.historyUpdatesListener.Start(); err != nil {
+		return err
 	}
 	s.envelopesMonitor.Start()
 	s.mailMonitor.Start()

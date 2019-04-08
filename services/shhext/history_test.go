@@ -9,6 +9,7 @@ import (
 	"github.com/status-im/status-go/db"
 	"github.com/status-im/status-go/mailserver"
 	whisper "github.com/status-im/whisper/whisperv6"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,7 +94,10 @@ func TestBloomFilterToMessageRequestPayload(t *testing.T) {
 }
 
 func TestCreateRequestsEmptyState(t *testing.T) {
-	tracker := NewHistoryUpdateTracker(createInMemStore(t), NewRequestsRegistry(0), time.Now)
+	now := time.Now()
+	tracker := NewHistoryUpdateTracker(
+		createInMemStore(t), NewRequestsRegistry(0),
+		func() time.Time { return now })
 	requests, err := tracker.CreateRequests([]TopicRequest{
 		{Topic: whisper.TopicType{1}, Duration: time.Hour},
 		{Topic: whisper.TopicType{2}, Duration: time.Hour},
@@ -101,7 +105,17 @@ func TestCreateRequestsEmptyState(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, requests, 2)
-	// FIXME verify requests content
+	var (
+		oneTopic, twoTopic db.HistoryRequest
+	)
+	if len(requests[0].Histories()) == 1 {
+		oneTopic, twoTopic = requests[0], requests[1]
+	} else {
+		oneTopic, twoTopic = requests[1], requests[0]
+	}
+	require.Len(t, oneTopic.Histories(), 1)
+	require.Len(t, twoTopic.Histories(), 2)
+
 }
 
 func TestCreateRequestsWithExistingRequest(t *testing.T) {
@@ -119,6 +133,17 @@ func TestCreateRequestsWithExistingRequest(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, requests, 2)
+
+	var (
+		oneTopic, twoTopic db.HistoryRequest
+	)
+	if len(requests[0].Histories()) == 1 {
+		oneTopic, twoTopic = requests[0], requests[1]
+	} else {
+		oneTopic, twoTopic = requests[1], requests[0]
+	}
+	assert.Len(t, oneTopic.Histories(), 1)
+	assert.Len(t, twoTopic.Histories(), 2)
 }
 
 func TestRequestFinishedUpdate(t *testing.T) {
