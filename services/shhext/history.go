@@ -154,7 +154,6 @@ func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest
 // Changes should not be persisted on disk in this method.
 func RenewRequests(requests []db.HistoryRequest, now time.Time) []db.HistoryRequest {
 	zero := time.Time{}
-	// TODO inject our ntp-synced time
 	for i := range requests {
 		req := requests[i]
 		histories := req.Histories()
@@ -181,8 +180,8 @@ func CreateTopicOptionsFromRequest(req db.HistoryRequest) TopicOptions {
 		rst[i] = TopicOption{
 			Topic: history.Topic,
 			Range: Range{
-				Start: uint64(history.Current.Add(-(WhisperTimeAllowance)).UnixNano()),
-				End:   uint64(history.End.UnixNano()),
+				Start: uint64(history.Current.Add(-(WhisperTimeAllowance)).Unix()),
+				End:   uint64(history.End.Unix()),
 			},
 		}
 	}
@@ -283,6 +282,7 @@ func (filter BloomFilterOption) ToMessagesRequestPayload() ([]byte, error) {
 		// Client must tell the MailServer if it supports batch responses.
 		// This can be removed in the future.
 		Batch: true,
+		Limit: 10000,
 	}
 	return rlp.EncodeToBytes(payload)
 }
