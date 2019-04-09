@@ -163,8 +163,6 @@ type PublicAPI struct {
 	service   *Service
 	publicAPI *whisper.PublicWhisperAPI
 	log       log.Logger
-
-	historyStore *HistoryUpdateTracker
 }
 
 // NewPublicAPI returns instance of the public API.
@@ -571,7 +569,7 @@ func (api *PublicAPI) requestMessagesUsingPayload(peer, symkeyID string, payload
 // After that status-go will guarantee that request for this topic and date will be performed.
 func (api *PublicAPI) InitiateHistoryRequests(request InitiateHistoryRequest) ([]hexutil.Bytes, error) {
 	rst := []hexutil.Bytes{}
-	requests, err := api.historyStore.CreateRequests(request.Requests)
+	requests, err := api.service.historyUpdates.CreateRequests(request.Requests)
 	if err != nil {
 		return nil, err
 	}
@@ -588,8 +586,7 @@ func (api *PublicAPI) InitiateHistoryRequests(request InitiateHistoryRequest) ([
 			return rst, err
 		}
 		req.ID = hash
-		// after save we will ensure that this request is finished. application will have to ensure that no more
-		// topics can be added to it before that.
+		// after save we will never add more topics to the same request until it is finished..
 		err = req.Save()
 		if err != nil {
 			return rst, err

@@ -146,7 +146,7 @@ func (tracker *HistoryUpdateTracker) CreateRequests(topicRequests []TopicRequest
 			filtered = append(filtered, req)
 		}
 	}
-	filtered = append(filtered, createRequestsFromTopicHistories(tracker.store, mapToList(topics))...)
+	filtered = append(filtered, GroupHistoriesByRequestTimespan(tracker.store, mapToList(topics))...)
 	return RenewRequests(filtered, tracker.timeSource()), nil
 }
 
@@ -197,22 +197,24 @@ func mapToList(topics map[whisper.TopicType]db.TopicHistory) []db.TopicHistory {
 	return rst
 }
 
-func createRequestsFromTopicHistories(store db.HistoryStore, histories []db.TopicHistory) []db.HistoryRequest {
+// GroupHistoriesByRequestTimespan creates requests from provided histories.
+// Multiple histories will be included into the same request only if they share timespan.
+func GroupHistoriesByRequestTimespan(store db.HistoryStore, histories []db.TopicHistory) []db.HistoryRequest {
 	requests := []db.HistoryRequest{}
 	for _, th := range histories {
-		if len(requests) == 0 {
-			requests = append(requests, store.NewRequest())
-		}
+		var added bool
 		for i := range requests {
 			req := &requests[i]
 			histories := req.Histories()
-			if len(histories) == 0 || histories[0].SameRange(th) {
+			if histories[0].SameRange(th) {
 				req.AddHistory(th)
-			} else {
-				req := store.NewRequest()
-				req.AddHistory(th)
-				requests = append(requests, req)
+				added = true
 			}
+		}
+		if !added {
+			req := store.NewRequest()
+			req.AddHistory(th)
+			requests = append(requests, req)
 		}
 	}
 	return requests

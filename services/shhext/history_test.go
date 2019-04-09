@@ -188,3 +188,18 @@ func TestTopicHistoryUpdate(t *testing.T) {
 	require.NoError(t, th.Load())
 	require.Equal(t, hour.Unix(), th.Current.Unix())
 }
+
+func TestGroupHistoriesByRequestTimestamp(t *testing.T) {
+	requests := GroupHistoriesByRequestTimespan(createInMemStore(t), []db.TopicHistory{
+		{Topic: whisper.TopicType{1}, Duration: time.Hour},
+		{Topic: whisper.TopicType{2}, Duration: time.Hour},
+		{Topic: whisper.TopicType{3}, Duration: 2 * time.Hour},
+		{Topic: whisper.TopicType{4}, Duration: 2 * time.Hour},
+		{Topic: whisper.TopicType{5}, Duration: 3 * time.Hour},
+		{Topic: whisper.TopicType{6}, Duration: 3 * time.Hour},
+	})
+	require.Len(t, requests, 3)
+	for _, req := range requests {
+		require.Len(t, req.Histories(), 2)
+	}
+}
